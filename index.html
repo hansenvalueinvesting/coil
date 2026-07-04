@@ -112,7 +112,7 @@
 <div class="wrap">
   <header>
     <div class="title"><span class="mark">▲</span> Coil</div>
-    <div class="sub">Equities coiling in a <b>flat, sideways channel</b> under a repeatedly-tested ceiling — not a diagonal grind. <b class="mark">Firing</b> = closed above the ceiling on expanded volume · <b style="color:var(--coil)">Coiling</b> = still building the range, pressed up under resistance.</div>
+    <div class="sub">Equities whose volatility has gone <b>unusually quiet vs their own 1-year normal</b>, pressed under a repeatedly-tested ceiling. <b class="mark">Firing</b> = closed above the ceiling on expanded volume · <b style="color:var(--coil)">Coiling</b> = still building the range, pressed up under resistance.</div>
     <div class="params" id="params"></div>
   </header>
 
@@ -132,10 +132,8 @@ const COLS=[
   {k:'close',       t:'Close'},
   {k:'_gap',        t:'vs Ceiling'},
   {k:'vol_mult',    t:'Vol ×'},
+  {k:'vol_pctile',  t:'Vol Pctile'},
   {k:'base_range_pct',t:'Base Range'},
-  {k:'recent_range_pct',t:'Recent'},
-  {k:'trend_eff',   t:'Trend'},
-  {k:'atr_contraction',t:'ATR Contr'},
   {k:'avg_base_vol',t:'Avg Vol'},
   {k:'date',        t:'Date'},
 ];
@@ -162,14 +160,12 @@ function render(){
   const nCoil = DATA.coiling_count  ?? DATA.hits.filter(h=>h.status==='coiling').length;
   const chips=[
     ['Base', p.base_len+'d'],
-    ['Max range', '≤'+p.max_base_range_pct+'%'],
   ];
-  if(p.max_recent_range_pct!=null) chips.push(['Recent tightness', '≤'+p.max_recent_range_pct+'%']);
-  if(p.max_trend_eff!=null) chips.push(['Flatness', 'trend ≤'+p.max_trend_eff]);
+  if(p.max_vol_pctile!=null) chips.push(['Quiet vs normal', '≤'+Math.round(p.max_vol_pctile*100)+'th pctile']);
+  if(p.vol_baseline_bars!=null) chips.push(['Baseline', p.vol_baseline_bars+'d']);
   if(p.min_ceiling_tests!=null) chips.push(['Ceiling tests', '≥'+p.min_ceiling_tests]);
   chips.push(['Vol trigger', '≥'+p.vol_mult+'×']);
   if(p.near_ceiling_pct!=null) chips.push(['Coil zone', '≤'+p.near_ceiling_pct+'% under']);
-  chips.push(['Contraction', p.require_contraction?'on':'off']);
   chips.push(['Min price', '$'+p.min_price]);
   chips.push(['Min vol', fmtVol(p.min_avg_vol)]);
   document.getElementById('params').innerHTML=chips
@@ -226,10 +222,8 @@ function drawRows(){
       <td>$${h.close.toFixed(2)}</td>
       ${gapCell(h)}
       <td class="${fired?'volx':'coilx'}">${h.vol_mult}×</td>
+      <td class="muted" title="base volatility rank vs its own trailing year · lower = quieter">${h.vol_pctile!=null?h.vol_pctile+'th':'—'}</td>
       <td class="muted">${h.base_range_pct}%</td>
-      <td class="muted">${h.recent_range_pct!=null?h.recent_range_pct+'%':'—'}</td>
-      <td class="muted" title="0 = flat sideways channel · 1 = one-way trend">${h.trend_eff??'—'}</td>
-      <td class="muted">${h.atr_contraction??'—'}</td>
       <td class="muted">${fmtVol(h.avg_base_vol)}</td>
       <td class="muted">${h.date}</td>
     </tr>
@@ -240,7 +234,7 @@ function drawRows(){
           <div class="stat"><div class="k">Base ceiling</div><div class="v">$${h.base_high.toFixed(2)}</div></div>
           ${closeStat}
           <div class="stat"><div class="k">Base low</div><div class="v">$${h.base_low.toFixed(2)}</div></div>
-          <div class="stat"><div class="k">Trend (0 flat→1 grind)</div><div class="v">${h.trend_eff??'—'}</div></div>
+          <div class="stat"><div class="k">Vol pctile (lower=quieter)</div><div class="v">${h.vol_pctile!=null?h.vol_pctile+'th':'—'}</div></div>
           <div class="stat"><div class="k">Ceiling tests</div><div class="v">${h.ceiling_tests??'—'}×</div></div>
           <div class="legend">
             <span><i style="background:#3fb950"></i>Close</span>
