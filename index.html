@@ -13,6 +13,7 @@
     --ink:#e6edf3; --dim:#8b98a5; --faint:#5b6672;
     --up:#3fb950; --break:#ff9f1c; --break-glow:rgba(255,159,28,.14);
     --ceiling:#ff9f1c; --vol:#2a3540; --accent:#58a6ff;
+    --coil:#58a6ff; --coil-glow:rgba(88,166,255,.12);
   }
   *{box-sizing:border-box;margin:0;padding:0}
   body{
@@ -62,6 +63,33 @@
   .pos{color:var(--up)} .brk{color:var(--break);font-weight:500}
   .muted{color:var(--faint)}
   .volx{color:var(--break);font-weight:700}
+  .coilx{color:var(--dim);font-weight:500}
+
+  /* status badge */
+  .tick{display:flex;align-items:center;gap:8px}
+  .badge{
+    font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    padding:2px 6px;border-radius:3px;border:1px solid transparent;white-space:nowrap;
+  }
+  .badge.fire{color:var(--break);background:var(--break-glow);border-color:rgba(255,159,28,.35)}
+  .badge.coil{color:var(--coil);background:var(--coil-glow);border-color:rgba(88,166,255,.32)}
+  tr.row-coil td:first-child{box-shadow:inset 2px 0 0 var(--coil)}
+  tr.row-fire td:first-child{box-shadow:inset 2px 0 0 var(--break)}
+  .gap-up{color:var(--break);font-weight:500}
+  .gap-below{color:var(--coil)}
+
+  /* filter segmented control */
+  .filters{display:flex;gap:0;margin:18px 0 4px;border:1px solid var(--line);border-radius:5px;width:max-content;overflow:hidden}
+  .filters button{
+    font-family:inherit;font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+    background:transparent;color:var(--dim);border:0;padding:7px 14px;cursor:pointer;
+    border-right:1px solid var(--line);transition:background .12s,color .12s;
+  }
+  .filters button:last-child{border-right:0}
+  .filters button:hover{background:var(--panel)}
+  .filters button.on{background:var(--panel-2);color:var(--ink);font-weight:600}
+  .filters button .n{color:var(--faint);font-weight:400;margin-left:5px}
+  .filters button.on .n{color:var(--accent)}
 
   /* expanded chart row */
   .detail td{padding:0;background:var(--panel-2)}
@@ -84,7 +112,7 @@
 <div class="wrap">
   <header>
     <div class="title"><span class="mark">▲</span> Coil</div>
-    <div class="sub">Equities that compressed into a tight base, then <b>closed above the ceiling on expanded volume</b>. Signal fires on the breakout candle's close.</div>
+    <div class="sub">Equities compressed into a tight base. <b class="mark">Firing</b> = closed above the ceiling on expanded volume · <b style="color:var(--coil)">Coiling</b> = still building the range, pressed up under resistance.</div>
     <div class="params" id="params"></div>
   </header>
 
@@ -97,46 +125,69 @@
 
 <script>
 const fmtVol = v => v>=1e9?(v/1e9).toFixed(1)+'B':v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e3?(v/1e3).toFixed(0)+'K':v;
-let DATA=null, sortKey='vol_mult', sortDir=-1;
+let DATA=null, sortKey='_score', sortDir=-1, filterMode='all';
 
 const COLS=[
   {k:'symbol',      t:'Ticker'},
   {k:'close',       t:'Close'},
-  {k:'breakout_pct',t:'Break %'},
+  {k:'_gap',        t:'vs Ceiling'},
   {k:'vol_mult',    t:'Vol ×'},
   {k:'base_range_pct',t:'Base Range'},
+  {k:'recent_range_pct',t:'Recent'},
   {k:'atr_contraction',t:'ATR Contr'},
   {k:'avg_base_vol',t:'Avg Vol'},
   {k:'date',        t:'Date'},
 ];
 
+// Older result files predate the coiling/breakout split — treat them as breakouts
+// and derive the helper fields the table sorts on.
+function normalize(h){
+  if(!h.status) h.status = 'breakout';
+  const fired = h.status==='breakout';
+  h._gap   = fired ? (h.breakout_pct??0) : -(h.dist_to_ceiling_pct??0);
+  h._score = fired ? 1000 + (h.vol_mult??0) : -(h.dist_to_ceiling_pct??0);
+  return h;
+}
+
 fetch('results.json?_='+Date.now())
   .then(r=>r.json())
-  .then(d=>{DATA=d;render();})
+  .then(d=>{DATA=d;(DATA.hits||[]).forEach(normalize);render();})
   .catch(()=>{document.getElementById('content').innerHTML=
     '<div class="empty"><b>No results file yet.</b><br>The nightly scan writes results.json — trigger the workflow or wait for the next run.</div>';});
 
 function render(){
   const p=DATA.params;
-  document.getElementById('params').innerHTML=[
+  const nFire = DATA.breakout_count ?? DATA.hits.filter(h=>h.status==='breakout').length;
+  const nCoil = DATA.coiling_count  ?? DATA.hits.filter(h=>h.status==='coiling').length;
+  const chips=[
     ['Base', p.base_len+'d'],
     ['Max range', '≤'+p.max_base_range_pct+'%'],
-    ['Vol trigger', '≥'+p.vol_mult+'×'],
-    ['Contraction', p.require_contraction?'on':'off'],
-    ['Min price', '$'+p.min_price],
-    ['Min vol', fmtVol(p.min_avg_vol)],
-  ].map(([k,v])=>`<span class="chip">${k} <b>${v}</b></span>`).join('')
+  ];
+  if(p.max_recent_range_pct!=null) chips.push(['Recent tightness', '≤'+p.max_recent_range_pct+'%']);
+  chips.push(['Vol trigger', '≥'+p.vol_mult+'×']);
+  if(p.near_ceiling_pct!=null) chips.push(['Coil zone', '≤'+p.near_ceiling_pct+'% under']);
+  chips.push(['Contraction', p.require_contraction?'on':'off']);
+  chips.push(['Min price', '$'+p.min_price]);
+  chips.push(['Min vol', fmtVol(p.min_avg_vol)]);
+  document.getElementById('params').innerHTML=chips
+    .map(([k,v])=>`<span class="chip">${k} <b>${v}</b></span>`).join('')
    +`<span class="chip">Scanned <b>${DATA.universe_size.toLocaleString()}</b></span>`
-   +`<span class="chip">Hits <b>${DATA.hit_count}</b></span>`
    +`<span class="chip">${DATA.generated_utc}</span>`;
 
   const c=document.getElementById('content');
   if(!DATA.hits.length){
-    c.innerHTML='<div class="empty"><b>No breakouts today.</b><br>No equity in the universe closed above its base ceiling on qualifying volume. That is a normal, quiet-tape result.</div>';
+    c.innerHTML='<div class="empty"><b>Nothing today.</b><br>No equity in the universe is coiling under its ceiling or breaking out on qualifying volume. That is a normal, quiet-tape result.</div>';
     return;
   }
-  const th=COLS.map(col=>`<th data-k="${col.k}" class="${col.k===sortKey?'active':''}">${col.t}<span class="arw"> ${col.k===sortKey?(sortDir<0?'▼':'▲'):''}</span></th>`).join('');
-  c.innerHTML=`<table class="tbl"><thead><tr>${th}</tr></thead><tbody id="rows"></tbody></table>`;
+
+  const fbtn=(mode,label,n)=>`<button data-f="${mode}" class="${filterMode===mode?'on':''}">${label}<span class="n">${n}</span></button>`;
+  c.innerHTML=
+     `<div class="filters">${fbtn('all','All',DATA.hits.length)}${fbtn('breakout','▲ Firing',nFire)}${fbtn('coiling','◷ Coiling',nCoil)}</div>`
+    +`<table class="tbl"><thead><tr>`
+    +COLS.map(col=>`<th data-k="${col.k}" class="${col.k===sortKey?'active':''}">${col.t}<span class="arw"> ${col.k===sortKey?(sortDir<0?'▼':'▲'):''}</span></th>`).join('')
+    +`</tr></thead><tbody id="rows"></tbody></table>`;
+
+  c.querySelectorAll('.filters button').forEach(b=>b.onclick=()=>{filterMode=b.dataset.f;render();});
   c.querySelectorAll('th').forEach(t=>t.onclick=()=>{
     const k=t.dataset.k;
     if(k===sortKey)sortDir*=-1;else{sortKey=k;sortDir=-1;}
@@ -145,20 +196,35 @@ function render(){
   drawRows();
 }
 
+function gapCell(h){
+  if(h.status==='breakout') return `<td class="gap-up">+${h.breakout_pct}%</td>`;
+  const d=h.dist_to_ceiling_pct;
+  return `<td class="gap-below" title="closing this far below the ceiling">−${d??'—'}%</td>`;
+}
+
 function drawRows(){
-  const rows=[...DATA.hits].sort((a,b)=>{
-    let x=a[sortKey],y=b[sortKey];
-    if(typeof x==='string')return sortDir*x.localeCompare(y);
-    return sortDir*((x??0)-(y??0));
-  });
+  const rows=DATA.hits
+    .filter(h=>filterMode==='all'||h.status===filterMode)
+    .sort((a,b)=>{
+      let x=a[sortKey],y=b[sortKey];
+      if(typeof x==='string')return sortDir*x.localeCompare(y);
+      return sortDir*((x??0)-(y??0));
+    });
   const tb=document.getElementById('rows');
-  tb.innerHTML=rows.map((h,i)=>`
-    <tr data-i="${i}">
-      <td class="sym">${h.symbol}</td>
+  tb.innerHTML=rows.map((h,i)=>{
+    const fired=h.status==='breakout';
+    const badge=fired?'<span class="badge fire">▲ Firing</span>':'<span class="badge coil">◷ Coiling</span>';
+    const closeStat=fired
+      ?`<div class="stat"><div class="k">Breakout close</div><div class="v brk">$${h.close.toFixed(2)}</div></div>`
+      :`<div class="stat"><div class="k">Below ceiling</div><div class="v" style="color:var(--coil)">−${h.dist_to_ceiling_pct??'—'}%</div></div>`;
+    return `
+    <tr data-i="${i}" class="${fired?'row-fire':'row-coil'}">
+      <td class="sym"><span class="tick">${h.symbol}${badge}</span></td>
       <td>$${h.close.toFixed(2)}</td>
-      <td class="brk">+${h.breakout_pct}%</td>
-      <td class="volx">${h.vol_mult}×</td>
+      ${gapCell(h)}
+      <td class="${fired?'volx':'coilx'}">${h.vol_mult}×</td>
       <td class="muted">${h.base_range_pct}%</td>
+      <td class="muted">${h.recent_range_pct!=null?h.recent_range_pct+'%':'—'}</td>
       <td class="muted">${h.atr_contraction??'—'}</td>
       <td class="muted">${fmtVol(h.avg_base_vol)}</td>
       <td class="muted">${h.date}</td>
@@ -168,7 +234,7 @@ function drawRows(){
         <canvas id="cv${i}"></canvas>
         <div class="stats">
           <div class="stat"><div class="k">Base ceiling</div><div class="v">$${h.base_high.toFixed(2)}</div></div>
-          <div class="stat"><div class="k">Breakout close</div><div class="v brk">$${h.close.toFixed(2)}</div></div>
+          ${closeStat}
           <div class="stat"><div class="k">Volume ×</div><div class="v">${h.vol_mult}×</div></div>
           <div class="stat"><div class="k">Base low</div><div class="v">$${h.base_low.toFixed(2)}</div></div>
           <div class="legend">
@@ -178,7 +244,7 @@ function drawRows(){
           </div>
         </div>
       </div>
-    </td></tr>`).join('');
+    </td></tr>`;}).join('');
 
   tb.querySelectorAll('tr[data-i]').forEach(tr=>{
     tr.onclick=()=>{
@@ -211,10 +277,13 @@ function drawChart(id,h){
   const maxV=Math.max(...vol);
   const yV=v=>padT+priceH+6+volH*(1-v/maxV);
 
+  const fired = h.status!=='coiling';
+  const accent = fired ? '#ff9f1c' : '#58a6ff';
+
   // volume bars
   const bw=Math.max(1,plotW/n*0.6);
   vol.forEach((v,i)=>{
-    g.fillStyle = (i===n-1)?'rgba(255,159,28,.55)':'#2a3540';
+    g.fillStyle = (i===n-1 && fired)?'rgba(255,159,28,.55)':'#2a3540';
     g.fillRect(x(i)-bw/2, yV(v), bw, padT+priceH+6+volH-yV(v));
   });
 
@@ -228,9 +297,10 @@ function drawChart(id,h){
   close.forEach((v,i)=>{i?g.lineTo(x(i),yP(v)):g.moveTo(x(i),yP(v));});
   g.stroke();
 
-  // breakout marker
-  g.fillStyle='#ff9f1c';
-  g.beginPath();g.arc(x(n-1),yP(close[n-1]),3.5,0,7);g.fill();
+  // last-bar marker: filled for a fired breakout, hollow ring while coiling
+  g.beginPath();g.arc(x(n-1),yP(close[n-1]),3.5,0,7);
+  if(fired){g.fillStyle=accent;g.fill();}
+  else{g.strokeStyle=accent;g.lineWidth=1.6;g.stroke();}
 }
 </script>
 </body>
