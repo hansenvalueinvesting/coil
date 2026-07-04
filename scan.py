@@ -16,8 +16,11 @@ The scanner reports TWO states so you can watch a setup before it triggers:
             repeatedly-tested ceiling and poised to break            range)
 
 Consolidation is measured as volatility (ATR%) ranking in the quiet tail of the
-stock's OWN trailing-year distribution — not a fixed range width. A base counts
-only if it is calmer than usual AND its ceiling has been tapped multiple times.
+stock's OWN trailing-year distribution — not a fixed range width. Resistance is
+a price level where several DISTINCT swing highs cluster (price hit it, was
+rejected, and came back) — found by pivot clustering, never the rolling max, so
+a one-way uptrend produces no level and is rejected. A hit needs BOTH: calmer
+than usual AND pressed under a level it has repeatedly failed to break.
 
 Universe : Nasdaq Trader symbol files (nasdaqlisted.txt + otherlisted.txt)
 Bars     : Yahoo Finance v8 chart endpoint (key-free)
@@ -54,12 +57,23 @@ PARAMS = {
     "near_ceiling_pct":    4.0,     # COILING: how far below the ceiling still counts as
                                     # "pressed up under resistance" (building the range)
 
-    # ---- structure: a real, repeatedly-tested ceiling ----
-    "ceiling_prox_pct":    2.0,     # a bar "tests" the ceiling if its high is within this %
-    "min_ceiling_tests":   2,       # resistance must be tapped at least this many times
-    "ceiling_setup_frac":  0.6,     # first ceiling test must land within this fraction of
-                                    # the base, so resistance is retested — not first reached
-                                    # on the final push up (keeps "repeatedly" honest)
+    # ---- structure: a real, repeatedly-tested resistance level ----
+    "res_lookback":        60,      # bars searched for a tested resistance level
+    "pivot_k":             3,       # a swing high needs this many lower highs each side
+    "min_reject_pct":      3.0,     # ...and price must fall >=this % off the high afterward
+                                    # (a real rejection, not a micro-wiggle in the coil)
+    "reject_win":          6,       # bars after a peak in which that drop must occur
+    "ceiling_band_pct":    2.5,     # swing highs within this % of each other are the
+                                    # same resistance zone (a horizontal band / mild slope)
+    "min_ceiling_tests":   2,       # zone needs at least this many DISTINCT rejections
+    "min_pivot_gap":       5,       # rejections must be >=this many bars apart to count
+                                    # separately (not two touches from one push)
+    "ceiling_setup_frac":  0.5,     # first rejection must land in the first fraction of the
+                                    # window, so the level pre-exists today's approach
+    "min_test_span_frac":  0.33,    # first->last rejection must span >=this fraction of the
+                                    # window, so the level was tested OVER TIME, not at once
+    "max_closes_above":    1,       # price must have FAILED to break: at most this many
+                                    # closes above the level within the window
 
     "min_price":           10.0,    # liquidity floor: last close
     "min_avg_vol":         300_000, # liquidity floor: avg base volume (shares)
@@ -150,6 +164,71 @@ def atr_pct(df):
     return atr / c * 100.0
 
 
+def swing_highs(highs, lows, p):
+    """Indices of swing-high pivots that represent a genuine REJECTION.
+
+    A pivot is a bar whose high is a strict local peak with ``pivot_k`` lower
+    highs on each side AND from which price then fell at least ``min_reject_pct``
+    within the next ``reject_win`` bars. The rejection-depth requirement is what
+    separates a real test-and-fail from the shallow micro-wiggles inside a quiet
+    coil (which would otherwise masquerade as a repeatedly-tested level)."""
+    n = len(highs)
+    k = p["pivot_k"]
+    mr = p["min_reject_pct"] / 100.0
+    rw = p["reject_win"]
+    piv = []
+    for i in range(k, n - k):
+        h = highs[i]
+        if not (h >= highs[i - k:i + k + 1].max() and h > highs[i - 1] and h > highs[i + 1]):
+            continue
+        fwd = lows[i + 1:min(n, i + 1 + rw)]
+        if len(fwd) and (h - fwd.min()) / h >= mr:      # price was rejected down from here
+            piv.append(i)
+    return piv
+
+
+def _distinct(indices, min_gap):
+    """Collapse pivots that sit within ``min_gap`` bars of each other so two
+    touches from the SAME push aren't counted as two separate rejections."""
+    out = []
+    for i in sorted(indices):
+        if not out or i - out[-1] >= min_gap:
+            out.append(i)
+    return out
+
+
+def resistance_zones(highs, lows, p):
+    """Find horizontal resistance zones — price levels where several DISTINCT
+    swing highs (genuine rejections) cluster within ``ceiling_band_pct``.
+
+    This is deliberately NOT the rolling max of a window: an uptrend's swing
+    highs ascend and never cluster, so a one-way grind produces no zone and is
+    rejected. A genuine ceiling is a level price hit, got rejected at, pulled
+    back from, and hit again — exactly what a cluster of separated pivots is.
+
+    Returns a list of ``{level, tests, first, last}`` dicts, most-tested first.
+    """
+    piv = swing_highs(highs, lows, p)
+    if len(piv) < p["min_ceiling_tests"]:
+        return []
+    band = p["ceiling_band_pct"] / 100.0
+    zones = []
+    for a in piv:
+        lvl = highs[a]
+        members = _distinct([b for b in piv if abs(highs[b] - lvl) <= band * lvl],
+                            p["min_pivot_gap"])
+        if len(members) >= p["min_ceiling_tests"]:
+            top = max(float(highs[b]) for b in members)
+            zones.append({"level": top, "tests": len(members),
+                          "first": members[0], "last": members[-1]})
+    # dedup zones whose levels coincide, keeping the most-tested
+    uniq = []
+    for z in sorted(zones, key=lambda z: (-z["tests"], -z["level"])):
+        if not any(abs(z["level"] - u["level"]) <= band * u["level"] for u in uniq):
+            uniq.append(z)
+    return uniq
+
+
 def evaluate(symbol, df, p):
     """Run the two-phase test on the LAST bar.
 
@@ -158,21 +237,19 @@ def evaluate(symbol, df, p):
     ceiling), or None when the base is not a real consolidation.
     """
     n = p["base_len"]
-    if df is None or len(df) < n + p["min_vol_baseline_bars"] + 20:
+    if df is None or len(df) < max(n, p["res_lookback"]) + p["min_vol_baseline_bars"] + 20:
         return None
 
     df = df.copy()
     df["atrp"] = atr_pct(df)
 
     today = df.iloc[-1]                      # candidate breakout / latest bar
+    prev  = df.iloc[-2]                       # yesterday (for a fresh-cross test)
     base  = df.iloc[-(n + 1):-1]             # the n bars BEFORE today
-
-    base_high = float(base["high"].max())
-    if base_high <= 0:
-        return None
 
     avg_base_vol   = base["volume"].mean()
     last_close     = float(today["close"])
+    prev_close     = float(prev["close"])
     last_vol       = float(today["volume"])
 
     # ---- liquidity gates ----
@@ -193,25 +270,56 @@ def evaluate(symbol, df, p):
     vol_pctile = float((hist < vol_now).mean())     # 0 = quietest in its baseline
     if vol_pctile > p["max_vol_pctile"]:            return None
 
-    # ---- structure: a real, retested ceiling (established early, tapped >=2x) ----
-    prox_line   = base_high * (1 - p["ceiling_prox_pct"] / 100.0)
-    tests_mask  = base["high"].values >= prox_line
-    n_ceiling_tests = int(tests_mask.sum())
-    first_test  = int(tests_mask.argmax()) if n_ceiling_tests else n
-    if n_ceiling_tests < p["min_ceiling_tests"]:                    return None
-    if first_test > (n - 1) * p["ceiling_setup_frac"]:             return None
+    # ---- structure: a real, repeatedly-tested resistance level ----
+    #   Look back over res_lookback bars for a price level where several DISTINCT
+    #   swing highs cluster — a level price hit and was rejected at more than
+    #   once. The level is fixed by those historical rejections, so it can NOT
+    #   drift up with the trend the way a rolling max does.
+    m       = p["res_lookback"]
+    res_win = df.iloc[-(m + 1):-1]           # window before today
+    highs   = res_win["high"].values
+    lows    = res_win["low"].values
+    closes  = res_win["close"].values
+    span    = len(highs)
 
-    vol_mult            = last_vol / avg_base_vol if avg_base_vol else 0.0
-    breakout_pct        = (last_close - base_high) / base_high * 100.0
-    dist_to_ceiling_pct = (base_high - last_close) / base_high * 100.0
+    def qualifies(z):
+        # established early, and the rejections span time (not clustered at the end)
+        if z["first"] > span * p["ceiling_setup_frac"]:          return False
+        if (z["last"] - z["first"]) < span * p["min_test_span_frac"]: return False
+        # price FAILED to break: it never closed above the level within the window
+        if int((closes > z["level"]).sum()) > p["max_closes_above"]: return False
+        return True
 
-    # ---- classify: firing breakout vs still-coiling base ----
-    if last_close > base_high and vol_mult >= p["vol_mult"]:
-        status = "breakout"          # Phase 2: cleared ceiling on expanded volume
-    elif last_close <= base_high and dist_to_ceiling_pct <= p["near_ceiling_pct"]:
-        status = "coiling"           # Phase 1: pressed up under the ceiling, no trigger yet
+    zones = [z for z in resistance_zones(highs, lows, p) if qualifies(z)]
+    if not zones:
+        return None
+
+    vol_mult = last_vol / avg_base_vol if avg_base_vol else 0.0
+
+    # ---- classify: firing breakout vs still-coiling under the resistance ----
+    #   BREAKOUT : today's close clears a tested level that yesterday's close was
+    #              still below (a fresh cross), on expanded volume. Requiring the
+    #              cross to be TODAY rejects names that broke out days ago.
+    #   COILING  : price is pressed just under the nearest overhead tested level.
+    fresh = [z for z in zones
+             if prev_close <= z["level"] < last_close and vol_mult >= p["vol_mult"]]
+    overhead = [z for z in zones if z["level"] >= last_close]
+
+    if fresh:
+        chosen = max(fresh, key=lambda z: z["level"])
+        status = "breakout"
+    elif overhead:
+        chosen = min(overhead, key=lambda z: z["level"])   # nearest resistance above
+        if (chosen["level"] - last_close) / chosen["level"] * 100.0 > p["near_ceiling_pct"]:
+            return None
+        status = "coiling"
     else:
         return None
+
+    base_high           = chosen["level"]
+    n_ceiling_tests     = chosen["tests"]
+    breakout_pct        = (last_close - base_high) / base_high * 100.0
+    dist_to_ceiling_pct = (base_high - last_close) / base_high * 100.0
 
     tail = df.tail(p["chart_days_out"])
     return {

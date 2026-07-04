@@ -112,7 +112,7 @@
 <div class="wrap">
   <header>
     <div class="title"><span class="mark">▲</span> Coil</div>
-    <div class="sub">Equities whose volatility has gone <b>unusually quiet vs their own 1-year normal</b>, pressed under a repeatedly-tested ceiling. <b class="mark">Firing</b> = closed above the ceiling on expanded volume · <b style="color:var(--coil)">Coiling</b> = still building the range, pressed up under resistance.</div>
+    <div class="sub">Equities whose volatility has gone <b>unusually quiet vs their own 1-year normal</b>, pressed under a level they have <b>repeatedly hit and been rejected at</b> (clustered swing highs — not a rolling max). <b class="mark">Firing</b> = a fresh close above that level on expanded volume · <b style="color:var(--coil)">Coiling</b> = still pinned just under it.</div>
     <div class="params" id="params"></div>
   </header>
 
@@ -133,7 +133,7 @@ const COLS=[
   {k:'_gap',        t:'vs Ceiling'},
   {k:'vol_mult',    t:'Vol ×'},
   {k:'vol_pctile',  t:'Vol Pctile'},
-  {k:'ceiling_tests',t:'Tests'},
+  {k:'ceiling_tests',t:'Rejections'},
   {k:'date',        t:'Date'},
 ];
 
@@ -162,7 +162,9 @@ function render(){
   ];
   if(p.max_vol_pctile!=null) chips.push(['Quiet vs normal', '≤'+Math.round(p.max_vol_pctile*100)+'th pctile']);
   if(p.vol_baseline_bars!=null) chips.push(['Baseline', p.vol_baseline_bars+'d']);
-  if(p.min_ceiling_tests!=null) chips.push(['Ceiling tests', '≥'+p.min_ceiling_tests]);
+  if(p.res_lookback!=null) chips.push(['Resistance window', p.res_lookback+'d']);
+  if(p.min_ceiling_tests!=null) chips.push(['Rejections', '≥'+p.min_ceiling_tests]);
+  if(p.min_reject_pct!=null) chips.push(['Rejection depth', '≥'+p.min_reject_pct+'%']);
   chips.push(['Vol trigger', '≥'+p.vol_mult+'×']);
   if(p.near_ceiling_pct!=null) chips.push(['Coil zone', '≤'+p.near_ceiling_pct+'% under']);
   chips.push(['Min price', '$'+p.min_price]);
@@ -222,20 +224,20 @@ function drawRows(){
       ${gapCell(h)}
       <td class="${fired?'volx':'coilx'}">${h.vol_mult}×</td>
       <td class="muted" title="base volatility rank vs its own trailing year · lower = quieter">${h.vol_pctile!=null?h.vol_pctile+'th':'—'}</td>
-      <td class="muted" title="times the ceiling was tapped during the base">${h.ceiling_tests??'—'}×</td>
+      <td class="muted" title="distinct swing highs rejected at this resistance level">${h.ceiling_tests??'—'}×</td>
       <td class="muted">${h.date}</td>
     </tr>
     <tr class="detail" id="d${i}" style="display:none"><td colspan="${COLS.length}">
       <div class="detail-inner">
         <canvas id="cv${i}"></canvas>
         <div class="stats">
-          <div class="stat"><div class="k">Tested ceiling</div><div class="v">$${h.base_high.toFixed(2)}</div></div>
+          <div class="stat"><div class="k">Resistance level</div><div class="v">$${h.base_high.toFixed(2)}</div></div>
           ${closeStat}
           <div class="stat"><div class="k">Vol pctile (lower=quieter)</div><div class="v">${h.vol_pctile!=null?h.vol_pctile+'th':'—'}</div></div>
-          <div class="stat"><div class="k">Ceiling tests</div><div class="v">${h.ceiling_tests??'—'}×</div></div>
+          <div class="stat"><div class="k">Rejections at level</div><div class="v">${h.ceiling_tests??'—'}×</div></div>
           <div class="legend">
             <span><i style="background:#3fb950"></i>Close</span>
-            <span><i style="background:#ff9f1c"></i>Base ceiling</span>
+            <span><i style="background:#ff9f1c"></i>Resistance</span>
             <span><i style="background:#2a3540"></i>Volume</span>
           </div>
         </div>
