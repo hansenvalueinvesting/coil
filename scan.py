@@ -167,12 +167,10 @@ def evaluate(symbol, df, p):
     today = df.iloc[-1]                      # candidate breakout / latest bar
     base  = df.iloc[-(n + 1):-1]             # the n bars BEFORE today
 
-    base_high = base["high"].max()
-    base_low  = base["low"].min()
-    if base_low <= 0:
+    base_high = float(base["high"].max())
+    if base_high <= 0:
         return None
 
-    base_range_pct = (base_high - base_low) / base_low * 100.0
     avg_base_vol   = base["volume"].mean()
     last_close     = float(today["close"])
     last_vol       = float(today["volume"])
@@ -221,24 +219,22 @@ def evaluate(symbol, df, p):
         "status":          status,
         "date":            today["date"].strftime("%Y-%m-%d"),
         "close":           round(last_close, 2),
-        "base_high":       round(float(base_high), 2),
-        "base_low":        round(float(base_low), 2),
-        "base_range_pct":  round(base_range_pct, 2),
+        "base_high":       round(base_high, 2),          # the tested ceiling
+        # Part 1 — volatility quiet vs the stock's own normal
         "vol_pctile":      round(vol_pctile * 100, 1),
-        "base_atrp":       round(vol_now, 2),
+        # Part 2 — repeatedly-tested resistance
         "ceiling_tests":   n_ceiling_tests,
+        # Breakout on volume
+        "vol_mult":        round(vol_mult, 2),
         "breakout_pct":    round(breakout_pct, 2),
         "dist_to_ceiling_pct": round(dist_to_ceiling_pct, 2),
-        "vol_mult":        round(vol_mult, 2),
-        "avg_base_vol":    int(avg_base_vol),
-        "last_vol":        int(last_vol),
         "chart": {
             "dates":  [d.strftime("%Y-%m-%d") for d in tail["date"]],
             "close":  [round(float(x), 2) for x in tail["close"]],
             "volume": [int(x) for x in tail["volume"]],
             "high":   [round(float(x), 2) for x in tail["high"]],
             "low":    [round(float(x), 2) for x in tail["low"]],
-            "base_high": round(float(base_high), 2),
+            "base_high": round(base_high, 2),
         },
     }
 
