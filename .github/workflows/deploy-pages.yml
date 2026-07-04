@@ -1,0 +1,59 @@
+name: deploy-pages
+
+# Deploy the static dashboard (index.html + results.json) to GitHub Pages via a
+# proper Actions pipeline. This replaces the legacy "build from branch" Pages,
+# whose deployments collide and fail ("Deployment failed, try again later") when
+# several pushes land close together. The concurrency group below serialises
+# deployments so a newer one waits instead of failing.
+
+on:
+  # Content or workflow changes pushed straight to main.
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'results.json'
+      - '.github/workflows/deploy-pages.yml'
+  # After every nightly/dispatched scan commits a fresh results.json. The scan's
+  # own token-authored commit does not raise a `push` event, so we hook the scan
+  # workflow's completion instead.
+  workflow_run:
+    workflows: ["nightly-breakout-scan"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; queue rather than cancel so the latest always lands.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # For scan-triggered runs, only publish when the scan actually succeeded.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main            # always publish the current tip of main
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5   # switches the Pages source to Actions
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'            # index.html + results.json live at the repo root
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
