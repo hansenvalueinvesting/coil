@@ -4,14 +4,20 @@ Consolidation-Breakout Scanner
 ------------------------------
 Two-phase detection over the full US equity market:
 
-  Phase 1  CONSOLIDATION  a tight, range-bound base with contracting volatility
+  Phase 1  CONSOLIDATION  the base is unusually quiet vs the stock's own
+                          long-term normal, pressed under a repeatedly-tested
+                          ceiling
   Phase 2  BREAKOUT       today's CLOSE clears the base ceiling on expanded volume
 
 The scanner reports TWO states so you can watch a setup before it triggers:
 
   BREAKOUT  today's close cleared the ceiling on expanded volume  (signal fires)
-  COILING   still inside a tight, contracting base, pressed up      (building the
-            under the ceiling and poised to break                    range)
+  COILING   still inside a quiet base, pressed up under the         (building the
+            repeatedly-tested ceiling and poised to break            range)
+
+Consolidation is measured as volatility (ATR%) ranking in the quiet tail of the
+stock's OWN trailing-year distribution — not a fixed range width. A base counts
+only if it is calmer than usual AND its ceiling has been tapped multiple times.
 
 Universe : Nasdaq Trader symbol files (nasdaqlisted.txt + otherlisted.txt)
 Bars     : Yahoo Finance v8 chart endpoint (key-free)
@@ -36,24 +42,29 @@ import pandas as pd
 # ----------------------------------------------------------------------------
 PARAMS = {
     "base_len":            20,     # trading days in the consolidation base (pre-breakout)
-    "max_base_range_pct":  12.0,   # base tightness ceiling: (baseHigh-baseLow)/baseLow
-    "max_recent_range_pct": 7.0,   # 2nd-half tightness: the coil must actually squeeze,
-                                    # not just fit a wide swing under the overall cap
-    "require_contraction": True,    # base ATR% 2nd half must be < 1st half
+
+    # ---- consolidation: the base must be QUIET vs the stock's OWN long-term normal ----
+    "vol_baseline_bars":   252,    # trailing window (~1yr) that defines "normal" volatility
+    "max_vol_pctile":      0.25,   # base ATR% must rank in the quietest this-fraction of the
+                                    # baseline: 0.25 = bottom quartile of its own year
+    "min_vol_baseline_bars": 120,  # need at least this much history to judge "normal"
+
+    # ---- breakout trigger + coil zone ----
     "vol_mult":            1.5,     # breakout volume >= vol_mult * avg base volume
     "near_ceiling_pct":    4.0,     # COILING: how far below the ceiling still counts as
                                     # "pressed up under resistance" (building the range)
-    # ---- structure: a flat, oscillating channel, NOT a diagonal grind ----
-    "max_trend_eff":       0.42,   # Kaufman efficiency ratio on base closes: ~0 = choppy
-                                    # sideways range, ~1 = one-way trend. Reject the grind.
+
+    # ---- structure: a real, repeatedly-tested ceiling ----
     "ceiling_prox_pct":    2.0,     # a bar "tests" the ceiling if its high is within this %
     "min_ceiling_tests":   2,       # resistance must be tapped at least this many times
     "ceiling_setup_frac":  0.6,     # first ceiling test must land within this fraction of
                                     # the base, so resistance is retested — not first reached
-                                    # on the final push up (the diagonal-grind failure mode)
+                                    # on the final push up (keeps "repeatedly" honest)
+
     "min_price":           10.0,    # liquidity floor: last close
     "min_avg_vol":         300_000, # liquidity floor: avg base volume (shares)
-    "lookback_days":       160,     # calendar history pulled per symbol (~ 110 bars)
+    "lookback_days":       420,     # calendar history pulled per symbol (~285 bars, enough
+                                    # for a 252-bar volatility baseline)
     "chart_days_out":      70,      # bars of OHLCV embedded per hit for the mini-chart
 }
 
@@ -139,31 +150,15 @@ def atr_pct(df):
     return atr / c * 100.0
 
 
-def efficiency_ratio(closes):
-    """Kaufman efficiency ratio: |net move| / total path travelled.
-
-    ~0 means the price chopped sideways (a genuine range); ~1 means it moved
-    in a straight line (a trend / grind). Used to reject diagonal bases that
-    merely walk up into resistance instead of oscillating under it.
-    """
-    closes = np.asarray(closes, dtype=float)
-    if len(closes) < 2:
-        return 1.0
-    path = np.abs(np.diff(closes)).sum()
-    if path <= 0:
-        return 0.0
-    return abs(closes[-1] - closes[0]) / path
-
-
 def evaluate(symbol, df, p):
     """Run the two-phase test on the LAST bar.
 
     Returns a hit dict tagged with a ``status`` of either ``"breakout"`` (the
-    signal fired today) or ``"coiling"`` (still building a tight base under the
+    signal fired today) or ``"coiling"`` (still building a quiet base under the
     ceiling), or None when the base is not a real consolidation.
     """
     n = p["base_len"]
-    if df is None or len(df) < n + 20:
+    if df is None or len(df) < n + p["min_vol_baseline_bars"] + 20:
         return None
 
     df = df.copy()
@@ -186,28 +181,19 @@ def evaluate(symbol, df, p):
     if last_close < p["min_price"]:                 return None
     if avg_base_vol < p["min_avg_vol"]:             return None
 
-    # ---- tightness: the whole base must sit inside a modest band ----
-    if base_range_pct > p["max_base_range_pct"]:    return None
-
-    # ---- tightness: the recent half must be a genuine squeeze, so we reject a
-    #      single large directional swing that merely fits the overall cap ----
-    half = n // 2
-    recent      = base.iloc[half:]
-    recent_high = recent["high"].max()
-    recent_low  = recent["low"].min()
-    if recent_low <= 0:                             return None
-    recent_range_pct = (recent_high - recent_low) / recent_low * 100.0
-    if recent_range_pct > p["max_recent_range_pct"]: return None
-
-    # ---- volatility contraction within the base ----
-    atr_first  = base["atrp"].iloc[:half].mean()
-    atr_second = base["atrp"].iloc[half:].mean()
-    if p["require_contraction"] and not (atr_second < atr_first):
-        return None
-
-    # ---- structure: flat, oscillating channel — not a one-way grind ----
-    trend_eff = efficiency_ratio(base["close"].values)
-    if trend_eff > p["max_trend_eff"]:              return None
+    # ---- consolidation: base volatility quiet vs the stock's OWN normal ----
+    #   Measure = ATR% (price-normalized, so it's comparable across time). We
+    #   rank the base window's average ATR% against the distribution of every
+    #   base-length window over the trailing ~year. A low percentile means the
+    #   stock is calmer than it usually is — a genuine volatility contraction,
+    #   not merely a range that happens to look tight.
+    vol_now = float(base["atrp"].mean())
+    if not np.isfinite(vol_now):                    return None
+    hist = df["atrp"].iloc[:-1].rolling(n).mean().dropna()
+    hist = hist.iloc[-p["vol_baseline_bars"]:]
+    if len(hist) < p["min_vol_baseline_bars"]:      return None
+    vol_pctile = float((hist < vol_now).mean())     # 0 = quietest in its baseline
+    if vol_pctile > p["max_vol_pctile"]:            return None
 
     # ---- structure: a real, retested ceiling (established early, tapped >=2x) ----
     prox_line   = base_high * (1 - p["ceiling_prox_pct"] / 100.0)
@@ -238,15 +224,14 @@ def evaluate(symbol, df, p):
         "base_high":       round(float(base_high), 2),
         "base_low":        round(float(base_low), 2),
         "base_range_pct":  round(base_range_pct, 2),
-        "recent_range_pct": round(recent_range_pct, 2),
-        "trend_eff":       round(trend_eff, 2),
+        "vol_pctile":      round(vol_pctile * 100, 1),
+        "base_atrp":       round(vol_now, 2),
         "ceiling_tests":   n_ceiling_tests,
         "breakout_pct":    round(breakout_pct, 2),
         "dist_to_ceiling_pct": round(dist_to_ceiling_pct, 2),
         "vol_mult":        round(vol_mult, 2),
         "avg_base_vol":    int(avg_base_vol),
         "last_vol":        int(last_vol),
-        "atr_contraction": round(atr_second / atr_first, 2) if atr_first else None,
         "chart": {
             "dates":  [d.strftime("%Y-%m-%d") for d in tail["date"]],
             "close":  [round(float(x), 2) for x in tail["close"]],
