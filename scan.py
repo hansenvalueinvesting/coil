@@ -43,6 +43,14 @@ PARAMS = {
     "vol_mult":            1.5,     # breakout volume >= vol_mult * avg base volume
     "near_ceiling_pct":    4.0,     # COILING: how far below the ceiling still counts as
                                     # "pressed up under resistance" (building the range)
+    # ---- structure: a flat, oscillating channel, NOT a diagonal grind ----
+    "max_trend_eff":       0.42,   # Kaufman efficiency ratio on base closes: ~0 = choppy
+                                    # sideways range, ~1 = one-way trend. Reject the grind.
+    "ceiling_prox_pct":    2.0,     # a bar "tests" the ceiling if its high is within this %
+    "min_ceiling_tests":   2,       # resistance must be tapped at least this many times
+    "ceiling_setup_frac":  0.6,     # first ceiling test must land within this fraction of
+                                    # the base, so resistance is retested — not first reached
+                                    # on the final push up (the diagonal-grind failure mode)
     "min_price":           10.0,    # liquidity floor: last close
     "min_avg_vol":         300_000, # liquidity floor: avg base volume (shares)
     "lookback_days":       160,     # calendar history pulled per symbol (~ 110 bars)
@@ -131,6 +139,22 @@ def atr_pct(df):
     return atr / c * 100.0
 
 
+def efficiency_ratio(closes):
+    """Kaufman efficiency ratio: |net move| / total path travelled.
+
+    ~0 means the price chopped sideways (a genuine range); ~1 means it moved
+    in a straight line (a trend / grind). Used to reject diagonal bases that
+    merely walk up into resistance instead of oscillating under it.
+    """
+    closes = np.asarray(closes, dtype=float)
+    if len(closes) < 2:
+        return 1.0
+    path = np.abs(np.diff(closes)).sum()
+    if path <= 0:
+        return 0.0
+    return abs(closes[-1] - closes[0]) / path
+
+
 def evaluate(symbol, df, p):
     """Run the two-phase test on the LAST bar.
 
@@ -181,6 +205,18 @@ def evaluate(symbol, df, p):
     if p["require_contraction"] and not (atr_second < atr_first):
         return None
 
+    # ---- structure: flat, oscillating channel — not a one-way grind ----
+    trend_eff = efficiency_ratio(base["close"].values)
+    if trend_eff > p["max_trend_eff"]:              return None
+
+    # ---- structure: a real, retested ceiling (established early, tapped >=2x) ----
+    prox_line   = base_high * (1 - p["ceiling_prox_pct"] / 100.0)
+    tests_mask  = base["high"].values >= prox_line
+    n_ceiling_tests = int(tests_mask.sum())
+    first_test  = int(tests_mask.argmax()) if n_ceiling_tests else n
+    if n_ceiling_tests < p["min_ceiling_tests"]:                    return None
+    if first_test > (n - 1) * p["ceiling_setup_frac"]:             return None
+
     vol_mult            = last_vol / avg_base_vol if avg_base_vol else 0.0
     breakout_pct        = (last_close - base_high) / base_high * 100.0
     dist_to_ceiling_pct = (base_high - last_close) / base_high * 100.0
@@ -203,6 +239,8 @@ def evaluate(symbol, df, p):
         "base_low":        round(float(base_low), 2),
         "base_range_pct":  round(base_range_pct, 2),
         "recent_range_pct": round(recent_range_pct, 2),
+        "trend_eff":       round(trend_eff, 2),
+        "ceiling_tests":   n_ceiling_tests,
         "breakout_pct":    round(breakout_pct, 2),
         "dist_to_ceiling_pct": round(dist_to_ceiling_pct, 2),
         "vol_mult":        round(vol_mult, 2),
